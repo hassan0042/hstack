@@ -1,0 +1,1626 @@
+From 2661a2dd89f26889e1164492d945ef6460e2efc2 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 07:19:47 +0000
+Subject: [PATCH] Add stock-monitor: PSX + US market dashboard with investment
+ signals
+
+A self-contained Bun web app for watching Pakistani (PSX) and US stocks
+in separate tabs. Live quotes come from the PSX data portal and Yahoo
+Finance, fetched server-side with a 5-minute cache; any symbol whose
+feed is unreachable falls back to deterministic per-day sample data,
+with a header badge showing live/partial/sample mode.
+
+The dashboard shows an equal-weight watchlist index, market breadth,
+top gainer/decliner, a sortable watchlist table with 6-month sparklines,
+and a detail chart with crosshair tooltip. A technical signal engine
+(50-day trend, 1/3-month momentum, RSI-14, range position, volatility)
+scores each stock 0-100 and surfaces ranked buy candidates with
+plain-English rationale, plus a "treat with caution" list. Prominent
+not-financial-advice disclaimer throughout.
+
+Run with: bun stock-monitor/server.ts
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KKJpUXiWXVhXhrD1sGuKUU
+---
+ stock-monitor/README.md          |  92 ++++++
+ stock-monitor/public/app.js      | 489 +++++++++++++++++++++++++++++++
+ stock-monitor/public/index.html  |  84 ++++++
+ stock-monitor/public/styles.css  | 317 ++++++++++++++++++++
+ stock-monitor/server.ts          | 135 +++++++++
+ stock-monitor/src/providers.ts   |  81 +++++
+ stock-monitor/src/sample-data.ts |  86 ++++++
+ stock-monitor/src/signals.ts     | 165 +++++++++++
+ stock-monitor/src/watchlists.ts  |  75 +++++
+ 9 files changed, 1524 insertions(+)
+ create mode 100644 stock-monitor/README.md
+ create mode 100644 stock-monitor/public/app.js
+ create mode 100644 stock-monitor/public/index.html
+ create mode 100644 stock-monitor/public/styles.css
+ create mode 100644 stock-monitor/server.ts
+ create mode 100644 stock-monitor/src/providers.ts
+ create mode 100644 stock-monitor/src/sample-data.ts
+ create mode 100644 stock-monitor/src/signals.ts
+ create mode 100644 stock-monitor/src/watchlists.ts
+
+diff --git a/stock-monitor/README.md b/stock-monitor/README.md
+new file mode 100644
+index 0000000..b72cf10
+--- /dev/null
++++ b/stock-monitor/README.md
+@@ -0,0 +1,92 @@
++# Stock Monitor
++
++A self-contained dashboard for watching Pakistani (PSX) and US stocks side by
++side, with a technical screen that ranks the watchlist and explains, in plain
++English, which names look investable right now.
++
++![tabs](docs-tabs.png)
++
++## Run it
++
++```bash
++bun stock-monitor/server.ts
++# open http://localhost:4780
++```
++
++No dependencies beyond Bun. `PORT=5000 bun stock-monitor/server.ts` to change the port.
++
++## What you get
++
++- **Two market tabs** — Pakistan (PSX) and United States — each with its own
++  watchlist, currency, and index.
++- **KPI row** — an equal-weight watchlist index with a 6-month sparkline,
++  today's market breadth (advancers vs decliners), and the day's top
++  gainer/decliner.
++- **Watchlist table** — price, 1-day and 3-month change, volume, RSI-14, a
++  6-month trend sparkline, a composite 0–100 score, and a signal chip
++  (Buy candidate / Accumulate / Hold / Weak). Click any column header to sort,
++  click a row to chart it.
++- **Detail chart** — 6 months of daily closes with a crosshair tooltip
++  (date, price, day-over-day change).
++- **"Where the signals point"** — the top-ranked names with the reasons spelled
++  out ("Trading +6.2% above its 50-day average", "RSI 78 — overbought"), plus a
++  "Treat with caution" list for the weakest names.
++- **Light and dark theme**, following your OS setting with a manual toggle.
++
++## Where the data comes from
++
++| Market | Live source | Notes |
++|--------|-------------|-------|
++| PSX | `dps.psx.com.pk` (the exchange's own data portal) | Free, no API key |
++| US | Yahoo Finance chart API | Free, no API key |
++
++Quotes are fetched **server-side** (no browser CORS issues) and cached for
++5 minutes. The Refresh button forces a refetch.
++
++**Offline fallback:** any symbol whose live feed fails falls back to
++deterministic sample data (seeded per symbol per day, so it doesn't reshuffle
++on reload). The header badge tells you which mode you're in — *Live data*,
++*Partial live data*, or *Sample data*. Sample prices are clearly flagged and
++are NOT real.
++
++## How the score works
++
++Each stock gets a 0–100 composite from price history alone:
++
++| Factor | Weight | What it rewards |
++|--------|--------|-----------------|
++| Trend | ±15 | Price above a rising 50-day average |
++| 3-month momentum | ±20 | Sustained gains, penalizes sustained losses |
++| Momentum confirmation | ±5 | 1-month agreeing with 3-month |
++| RSI-14 | ±10 | The healthy 45–65 band; penalizes overbought >75 |
++| Range position | ±7 | Mid-to-upper 6-month range; penalizes chasing the very top |
++| Volatility | ±5 | Calmer names; penalizes >45% annualized |
++
++Score ≥ 70 → **Buy candidate**, 58–69 → **Accumulate**, 42–57 → **Hold**,
++< 42 → **Weak**. Every suggestion lists the factors that drove it.
++
++**This is not financial advice.** The screen sees prices only — no earnings,
++no news, no macro. It's a starting point for your own research, not a
++replacement for it.
++
++## Customizing the watchlists
++
++Edit `src/watchlists.ts`. Each entry has the symbol, display name, sector, and
++sample-data parameters (`basePrice`, `drift`, `vol`) used only when live feeds
++are unreachable.
++
++## Layout
++
++```
++stock-monitor/
++├── server.ts            # Bun server: static files + /api/market/:id
++├── src/
++│   ├── watchlists.ts    # PSX + US watchlist definitions
++│   ├── providers.ts     # Live fetchers (PSX portal, Yahoo Finance)
++│   ├── sample-data.ts   # Deterministic offline fallback series
++│   └── signals.ts       # RSI / SMA / momentum / scoring engine
++└── public/
++    ├── index.html
++    ├── styles.css       # Light + dark theme, validated dataviz palette
++    └── app.js           # Rendering + hand-rolled SVG charts
++```
+diff --git a/stock-monitor/public/app.js b/stock-monitor/public/app.js
+new file mode 100644
+index 0000000..4ad5d2c
+--- /dev/null
++++ b/stock-monitor/public/app.js
+@@ -0,0 +1,489 @@
++/* Stock Monitor frontend.
++   Charts are hand-rolled SVG following the dataviz mark specs:
++   2px lines with round caps, ~10% area wash, hairline solid gridlines,
++   >=8px end markers with a 2px surface ring, crosshair + tooltip on hover. */
++
++"use strict";
++
++const state = {
++  market: "psx",
++  data: {},          // market id -> payload
++  sort: { key: "score", dir: -1 },
++  selected: null,    // symbol
++  loading: false,
++};
++
++const $ = (sel) => document.querySelector(sel);
++const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
++
++/* ── Formatting ─────────────────────────────────────── */
++
++function fmtNum(x, dp = 2) {
++  return x.toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp });
++}
++function fmtPrice(x, cur) {
++  return `${cur}${fmtNum(x, x >= 1000 ? 0 : 2)}`;
++}
++function fmtCompact(x) {
++  if (x >= 1e9) return (x / 1e9).toFixed(1) + "B";
++  if (x >= 1e6) return (x / 1e6).toFixed(1) + "M";
++  if (x >= 1e3) return (x / 1e3).toFixed(0) + "K";
++  return String(Math.round(x));
++}
++function fmtPct(x, signed = true) {
++  const s = signed && x > 0 ? "+" : "";
++  return `${s}${x.toFixed(2)}%`;
++}
++function fmtDate(iso) {
++  const d = new Date(iso + "T00:00:00Z");
++  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
++}
++
++/* ── Data ───────────────────────────────────────────── */
++
++async function loadMarket(id, refresh = false) {
++  state.loading = true;
++  renderLoading();
++  try {
++    const res = await fetch(`/api/market/${id}${refresh ? "?refresh=1" : ""}`);
++    if (!res.ok) throw new Error(`API ${res.status}`);
++    state.data[id] = await res.json();
++  } catch (err) {
++    $("#kpi-row").innerHTML = `<div class="panel loading">Could not load market data (${err.message}). Is the server running?</div>`;
++    state.loading = false;
++    return;
++  }
++  state.loading = false;
++  const stocks = state.data[id].stocks;
++  if (!state.selected || !stocks.some((s) => s.symbol === state.selected)) {
++    state.selected = [...stocks].sort((a, b) => b.signals.score - a.signals.score)[0]?.symbol ?? null;
++  }
++  renderAll();
++}
++
++function current() {
++  return state.data[state.market];
++}
++
++/* Equal-weight index of the watchlist, normalized to 100 at window start. */
++function indexSeries(stocks) {
++  const minLen = Math.min(...stocks.map((s) => s.closes.length));
++  const n = Math.min(minLen, 126);
++  const out = new Array(n).fill(0);
++  for (const s of stocks) {
++    const win = s.closes.slice(-n);
++    const base = win[0];
++    for (let i = 0; i < n; i++) out[i] += win[i] / base;
++  }
++  return out.map((v) => (v / stocks.length) * 100);
++}
++
++/* ── SVG helpers ────────────────────────────────────── */
++
++const SVG_NS = "http://www.w3.org/2000/svg";
++function svgEl(tag, attrs = {}) {
++  const el = document.createElementNS(SVG_NS, tag);
++  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
++  return el;
++}
++
++function linePath(values, x, y) {
++  return values.map((v, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(2)},${y(v).toFixed(2)}`).join("");
++}
++
++/* Small trend sparkline: de-emphasis (muted) line, series-accent end dot. */
++function sparkline(values, w = 88, h = 26) {
++  const svg = svgEl("svg", { viewBox: `0 0 ${w} ${h}`, width: w, height: h, "aria-hidden": "true" });
++  if (values.length < 2) return svg;
++  const lo = Math.min(...values);
++  const hi = Math.max(...values);
++  const pad = 3;
++  const x = (i) => pad + (i / (values.length - 1)) * (w - pad * 2 - 4);
++  const y = (v) => (hi === lo ? h / 2 : pad + (1 - (v - lo) / (hi - lo)) * (h - pad * 2));
++  svg.appendChild(svgEl("path", {
++    d: linePath(values, x, y),
++    fill: "none", stroke: cssVar("--text-muted"), "stroke-width": 1.5,
++    "stroke-linecap": "round", "stroke-linejoin": "round",
++  }));
++  const lastX = x(values.length - 1);
++  const lastY = y(values[values.length - 1]);
++  svg.appendChild(svgEl("circle", { cx: lastX, cy: lastY, r: 4, fill: cssVar("--surface-1") }));
++  svg.appendChild(svgEl("circle", { cx: lastX, cy: lastY, r: 2.5, fill: cssVar("--series-1") }));
++  return svg;
++}
++
++function niceTicks(lo, hi, count = 4) {
++  const span = hi - lo || 1;
++  const step = Math.pow(10, Math.floor(Math.log10(span / count)));
++  const err = span / count / step;
++  const mult = err >= 7.5 ? 10 : err >= 3.5 ? 5 : err >= 1.5 ? 2 : 1;
++  const s = mult * step;
++  const start = Math.ceil(lo / s) * s;
++  const ticks = [];
++  for (let v = start; v <= hi + 1e-9; v += s) ticks.push(Number(v.toFixed(10)));
++  return ticks;
++}
++
++/* Full detail chart: gridlines, y ticks, month ticks, area wash, 2px line,
++   end dot + ring, crosshair with tooltip. Single series -> no legend box. */
++function detailChart(container, stock, cur) {
++  container.innerHTML = "";
++  const values = stock.closes;
++  const dates = stock.dates;
++  const W = 920, H = 280;
++  const m = { top: 14, right: 84, bottom: 26, left: 8 };
++  const lo = Math.min(...values);
++  const hi = Math.max(...values);
++  const padV = (hi - lo) * 0.06 || hi * 0.02;
++  const yLo = lo - padV, yHi = hi + padV;
++
++  const x = (i) => m.left + (i / (values.length - 1)) * (W - m.left - m.right);
++  const y = (v) => m.top + (1 - (v - yLo) / (yHi - yLo)) * (H - m.top - m.bottom);
++
++  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `${stock.symbol} closing price, last 6 months` });
++
++  // gridlines + y tick labels (right side, under the end-label area)
++  for (const t of niceTicks(yLo, yHi)) {
++    svg.appendChild(svgEl("line", { x1: m.left, x2: W - m.right, y1: y(t), y2: y(t), stroke: cssVar("--grid"), "stroke-width": 1 }));
++    const label = svgEl("text", { x: W - m.right + 8, y: y(t) + 3.5, "font-size": 11, fill: cssVar("--text-muted"), style: "font-variant-numeric: tabular-nums" });
++    label.textContent = t.toLocaleString("en-US");
++    svg.appendChild(label);
++  }
++
++  // month labels along the x axis
++  let lastMonth = "";
++  dates.forEach((d, i) => {
++    const mo = d.slice(0, 7);
++    if (mo !== lastMonth && i > 2 && i < dates.length - 4) {
++      lastMonth = mo;
++      const t = svgEl("text", { x: x(i), y: H - 8, "font-size": 11, fill: cssVar("--text-muted"), "text-anchor": "middle" });
++      t.textContent = new Date(d + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", timeZone: "UTC" });
++      svg.appendChild(t);
++    } else if (mo === lastMonth) { /* same month */ } else { lastMonth = mo; }
++  });
++
++  // baseline
++  svg.appendChild(svgEl("line", { x1: m.left, x2: W - m.right, y1: H - m.bottom, y2: H - m.bottom, stroke: cssVar("--baseline"), "stroke-width": 1 }));
++
++  // area wash (~10% of series hue)
++  const areaD = linePath(values, x, y) + `L${x(values.length - 1)},${H - m.bottom}L${x(0)},${H - m.bottom}Z`;
++  svg.appendChild(svgEl("path", { d: areaD, fill: cssVar("--series-1"), opacity: 0.1 }));
++
++  // the line
++  svg.appendChild(svgEl("path", {
++    d: linePath(values, x, y), fill: "none", stroke: cssVar("--series-1"),
++    "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round",
++  }));
++
++  // end marker: >=8px dot with a 2px surface ring, plus the end label
++  const ex = x(values.length - 1), ey = y(values[values.length - 1]);
++  svg.appendChild(svgEl("circle", { cx: ex, cy: ey, r: 6.5, fill: cssVar("--surface-1") }));
++  svg.appendChild(svgEl("circle", { cx: ex, cy: ey, r: 4.5, fill: cssVar("--series-1") }));
++  const endLabel = svgEl("text", { x: ex + 10, y: ey + 4, "font-size": 12.5, "font-weight": 650, fill: cssVar("--text-primary"), style: "font-variant-numeric: tabular-nums" });
++  endLabel.textContent = fmtPrice(values[values.length - 1], cur);
++  svg.appendChild(endLabel);
++
++  // crosshair layer
++  const cross = svgEl("g", { visibility: "hidden" });
++  const vline = svgEl("line", { y1: m.top, y2: H - m.bottom, stroke: cssVar("--baseline"), "stroke-width": 1 });
++  const dotRing = svgEl("circle", { r: 6, fill: cssVar("--surface-1") });
++  const dot = svgEl("circle", { r: 4, fill: cssVar("--series-1") });
++  cross.append(vline, dotRing, dot);
++  svg.appendChild(cross);
++
++  const tooltip = $("#tooltip");
++  const hit = svgEl("rect", { x: m.left, y: 0, width: W - m.left - m.right, height: H, fill: "transparent" });
++  hit.addEventListener("pointermove", (ev) => {
++    const rect = svg.getBoundingClientRect();
++    const relX = ((ev.clientX - rect.left) / rect.width) * W;
++    const i = Math.max(0, Math.min(values.length - 1, Math.round(((relX - m.left) / (W - m.left - m.right)) * (values.length - 1))));
++    const cx = x(i), cy = y(values[i]);
++    vline.setAttribute("x1", cx); vline.setAttribute("x2", cx);
++    dotRing.setAttribute("cx", cx); dotRing.setAttribute("cy", cy);
++    dot.setAttribute("cx", cx); dot.setAttribute("cy", cy);
++    cross.setAttribute("visibility", "visible");
++    const prev = i > 0 ? values[i - 1] : values[i];
++    const dPct = prev ? ((values[i] - prev) / prev) * 100 : 0;
++    tooltip.innerHTML =
++      `<div class="tt-date">${fmtDate(dates[i])}</div>` +
++      `<div class="tt-price">${fmtPrice(values[i], cur)}</div>` +
++      `<div class="tt-delta ${dPct >= 0 ? "up" : "down"}">${fmtPct(dPct)} vs prior day</div>`;
++    tooltip.hidden = false;
++    const tw = tooltip.offsetWidth;
++    const px = ev.clientX + 14 + tw > window.innerWidth ? ev.clientX - tw - 14 : ev.clientX + 14;
++    tooltip.style.left = `${px}px`;
++    tooltip.style.top = `${ev.clientY - 10}px`;
++  });
++  hit.addEventListener("pointerleave", () => {
++    cross.setAttribute("visibility", "hidden");
++    tooltip.hidden = true;
++  });
++  svg.appendChild(hit);
++
++  container.appendChild(svg);
++}
++
++/* ── Renderers ──────────────────────────────────────── */
++
++function renderLoading() {
++  if (!current()) $("#kpi-row").innerHTML = `<div class="panel loading">Loading market data…</div>`;
++}
++
++function statTile({ label, value, unit, delta, deltaClass, vs, spark }) {
++  const tile = document.createElement("div");
++  tile.className = "stat-tile";
++  tile.innerHTML =
++    `<span class="stat-label">${label}</span>` +
++    `<span class="stat-value">${value}${unit ? ` <span class="unit">${unit}</span>` : ""}</span>` +
++    (delta ? `<span class="stat-delta ${deltaClass}">${delta}${vs ? ` <span class="vs">${vs}</span>` : ""}</span>` : "");
++  if (spark) {
++    const holder = document.createElement("div");
++    holder.className = "stat-spark";
++    holder.appendChild(spark);
++    tile.appendChild(holder);
++  }
++  return tile;
++}
++
++function renderKpis(d) {
++  const row = $("#kpi-row");
++  row.innerHTML = "";
++  const idx = indexSeries(d.stocks);
++  const idxNow = idx[idx.length - 1];
++  const idxPrev = idx[idx.length - 2];
++  const idxPct = ((idxNow - idxPrev) / idxPrev) * 100;
++  const first = idx[0];
++  const sixMoPct = ((idxNow - first) / first) * 100;
++
++  row.appendChild(statTile({
++    label: `${d.indexName} — equal-weight, 6 mo = 100 at start`,
++    value: fmtNum(idxNow, 1),
++    delta: `${fmtPct(idxPct)} today · ${fmtPct(sixMoPct)} over 6 mo`,
++    deltaClass: idxPct >= 0 ? "up" : "down",
++    spark: sparkline(idx.slice(-60), 180, 32),
++  }));
++
++  const ups = d.stocks.filter((s) => s.changePct > 0).length;
++  const downs = d.stocks.filter((s) => s.changePct < 0).length;
++  row.appendChild(statTile({
++    label: "Market breadth today",
++    value: `${ups} <span class="unit">up</span> · ${downs} <span class="unit">down</span>`,
++    delta: ups >= downs ? "Advancers lead" : "Decliners lead",
++    deltaClass: ups >= downs ? "up" : "down",
++    vs: `of ${d.stocks.length} watched`,
++  }));
++
++  const byChg = [...d.stocks].sort((a, b) => b.changePct - a.changePct);
++  const g = byChg[0], l = byChg[byChg.length - 1];
++  row.appendChild(statTile({
++    label: `Top gainer — ${g.name}`,
++    value: g.symbol,
++    delta: `${fmtPct(g.changePct)} to ${fmtPrice(g.price, d.currencySymbol)}`,
++    deltaClass: "up",
++  }));
++  row.appendChild(statTile({
++    label: `Top decliner — ${l.name}`,
++    value: l.symbol,
++    delta: `${fmtPct(l.changePct)} to ${fmtPrice(l.price, d.currencySymbol)}`,
++    deltaClass: l.changePct >= 0 ? "up" : "down",
++  }));
++}
++
++const CHIP = {
++  "Buy candidate": { cls: "chip-buy", ico: "▲", short: "Buy" },
++  "Accumulate": { cls: "chip-acc", ico: "◆", short: "Accumulate" },
++  "Hold": { cls: "chip-hold", ico: "●", short: "Hold" },
++  "Weak": { cls: "chip-weak", ico: "▼", short: "Weak" },
++};
++function chipHtml(label, short = false) {
++  const c = CHIP[label];
++  return `<span class="chip ${c.cls}"><span class="chip-ico" aria-hidden="true">${c.ico}</span>${short ? c.short : label}</span>`;
++}
++
++const COLUMNS = [
++  { key: "symbol", label: "Symbol", get: (s) => s.symbol, str: true },
++  { key: "price", label: "Price", get: (s) => s.price },
++  { key: "changePct", label: "1D %", get: (s) => s.changePct },
++  { key: "mom63", label: "3M %", get: (s) => s.signals.mom63 ?? 0 },
++  { key: "volume", label: "Volume", get: (s) => s.volume },
++  { key: "rsi", label: "RSI 14", get: (s) => s.signals.rsi14 ?? 0 },
++  { key: "trend", label: "6M trend", get: null },
++  { key: "score", label: "Score", get: (s) => s.signals.score },
++  { key: "label", label: "Signal", get: (s) => s.signals.score },
++];
++
++function renderTable(d) {
++  const thead = $("#stock-table thead");
++  const tbody = $("#stock-table tbody");
++  thead.innerHTML = "";
++  const tr = document.createElement("tr");
++  for (const col of COLUMNS) {
++    const th = document.createElement("th");
++    const active = state.sort.key === col.key;
++    th.innerHTML = `${col.label}${active ? ` <span class="arrow">${state.sort.dir < 0 ? "▼" : "▲"}</span>` : ""}`;
++    if (col.get) th.addEventListener("click", () => {
++      state.sort = { key: col.key, dir: active ? -state.sort.dir : col.str ? 1 : -1 };
++      renderTable(current());
++    });
++    tr.appendChild(th);
++  }
++  thead.appendChild(tr);
++
++  const col = COLUMNS.find((c) => c.key === state.sort.key) ?? COLUMNS[7];
++  const rows = [...d.stocks].sort((a, b) => {
++    const av = col.get(a), bv = col.get(b);
++    return (col.str ? String(av).localeCompare(String(bv)) : av - bv) * state.sort.dir;
++  });
++
++  tbody.innerHTML = "";
++  for (const s of rows) {
++    const trEl = document.createElement("tr");
++    if (s.symbol === state.selected) trEl.classList.add("selected");
++    const sig = s.signals;
++    trEl.innerHTML =
++      `<td><span class="sym">${s.symbol}</span><span class="sym-name">${s.name} · ${s.sector}</span></td>` +
++      `<td>${fmtPrice(s.price, d.currencySymbol)}</td>` +
++      `<td class="${s.changePct >= 0 ? "up" : "down"}">${fmtPct(s.changePct)}</td>` +
++      `<td class="${(sig.mom63 ?? 0) >= 0 ? "up" : "down"}">${sig.mom63 == null ? "—" : fmtPct(sig.mom63 * 100)}</td>` +
++      `<td>${fmtCompact(s.volume)}</td>` +
++      `<td>${sig.rsi14 == null ? "—" : sig.rsi14.toFixed(0)}</td>` +
++      `<td class="spark-cell"></td>` +
++      `<td><span class="score-cell"><span class="score-meter"><i style="width:${sig.score}%"></i></span>${sig.score}</span></td>` +
++      `<td>${chipHtml(sig.label, true)}</td>`;
++    trEl.querySelector(".spark-cell").appendChild(sparkline(s.closes.slice(-60)));
++    trEl.addEventListener("click", () => {
++      state.selected = s.symbol;
++      renderTable(d);
++      renderDetail(d);
++    });
++    tbody.appendChild(trEl);
++  }
++}
++
++function renderDetail(d) {
++  const s = d.stocks.find((x) => x.symbol === state.selected) ?? d.stocks[0];
++  if (!s) return;
++  $("#detail-title").textContent = `${s.symbol} — ${s.name}`;
++  const sig = s.signals;
++  $("#detail-sub").textContent =
++    `${fmtPrice(s.price, d.currencySymbol)} · ${fmtPct(s.changePct)} today · ` +
++    `6-mo range ${fmtPrice(s.lo, d.currencySymbol)} – ${fmtPrice(s.hi, d.currencySymbol)}` +
++    (sig.rsi14 != null ? ` · RSI ${sig.rsi14.toFixed(0)}` : "") +
++    (s.live ? "" : " · sample data");
++  detailChart($("#detail-chart"), s, d.currencySymbol);
++}
++
++function renderSuggestions(d) {
++  const ranked = [...d.stocks].sort((a, b) => b.signals.score - a.signals.score);
++  const picks = ranked.filter((s) => s.signals.score >= 58).slice(0, 3);
++  const box = $("#suggestions");
++  box.innerHTML = "";
++  if (picks.length === 0) {
++    box.innerHTML = `<p class="empty-note">No strong technical setups on this watchlist today. Sitting out is a position too.</p>`;
++  }
++  picks.forEach((s, i) => {
++    const div = document.createElement("div");
++    div.className = "sugg";
++    const why = s.signals.rationale.slice(0, 3).map((r) => `<li>${r}</li>`).join("");
++    div.innerHTML =
++      `<div class="sugg-head"><span class="sugg-rank">${i + 1}</span>` +
++      `<span class="sugg-sym">${s.symbol}</span><span class="sugg-name">${s.name}</span>` +
++      `<span class="sugg-score">${s.signals.score}/100</span></div>` +
++      `<div>${chipHtml(s.signals.label)}</div>` +
++      `<ul>${why || "<li>Broadly steady across trend, momentum and RSI.</li>"}</ul>`;
++    div.style.cursor = "pointer";
++    div.addEventListener("click", () => {
++      state.selected = s.symbol;
++      renderTable(d);
++      renderDetail(d);
++    });
++    box.appendChild(div);
++  });
++
++  const cautions = ranked.filter((s) => s.signals.score < 45).slice(-2).reverse();
++  const cbox = $("#cautions");
++  cbox.innerHTML = "";
++  if (cautions.length === 0) cbox.innerHTML = `<p class="empty-note">Nothing flashing red on this watchlist right now.</p>`;
++  for (const s of cautions) {
++    const div = document.createElement("div");
++    div.className = "sugg";
++    const why = s.signals.rationale.slice(0, 2).map((r) => `<li>${r}</li>`).join("");
++    div.innerHTML =
++      `<div class="sugg-head"><span class="sugg-sym">${s.symbol}</span>` +
++      `<span class="sugg-name">${s.name}</span><span class="sugg-score">${s.signals.score}/100</span></div>` +
++      `<div>${chipHtml(s.signals.label)}</div><ul>${why}</ul>`;
++    cbox.appendChild(div);
++  }
++}
++
++function renderMeta(d) {
++  const badge = $("#source-badge");
++  const cfg = {
++    live: { color: "var(--status-good)", text: "Live data" },
++    mixed: { color: "var(--status-warning)", text: "Partial live data" },
++    sample: { color: "var(--status-warning)", text: "Sample data (feeds unreachable)" },
++  }[d.source];
++  badge.innerHTML = `<span class="dot" style="background:${cfg.color}"></span>${cfg.text}`;
++  badge.hidden = false;
++  badge.title = d.source === "live"
++    ? "All quotes fetched from the exchange feed."
++    : "Some or all quotes are deterministic sample data because the live feed was unreachable. Prices shown are NOT real.";
++  $("#as-of").textContent = `Updated ${new Date(d.asOf).toLocaleString()} · ${d.label} · prices in ${d.currency}`;
++}
++
++function renderAll() {
++  const d = current();
++  if (!d) return;
++  renderKpis(d);
++  renderTable(d);
++  renderDetail(d);
++  renderSuggestions(d);
++  renderMeta(d);
++}
++
++/* ── Wiring ─────────────────────────────────────────── */
++
++document.querySelectorAll(".tab").forEach((btn) => {
++  btn.addEventListener("click", () => {
++    document.querySelectorAll(".tab").forEach((b) => {
++      b.classList.toggle("active", b === btn);
++      b.setAttribute("aria-selected", String(b === btn));
++    });
++    state.market = btn.dataset.market;
++    state.selected = null;
++    if (state.data[state.market]) {
++      const stocks = state.data[state.market].stocks;
++      state.selected = [...stocks].sort((a, b) => b.signals.score - a.signals.score)[0]?.symbol ?? null;
++      renderAll();
++    } else {
++      loadMarket(state.market);
++    }
++  });
++});
++
++$("#refresh-btn").addEventListener("click", () => loadMarket(state.market, true));
++
++$("#theme-btn").addEventListener("click", () => {
++  const root = document.documentElement;
++  const isDark = root.dataset.theme
++    ? root.dataset.theme === "dark"
++    : window.matchMedia("(prefers-color-scheme: dark)").matches;
++  root.dataset.theme = isDark ? "light" : "dark";
++  renderAll(); // charts read CSS vars at render time
++});
++
++// Deep-linking: /?market=us&theme=dark (theme param also aids screenshot tests)
++const params = new URLSearchParams(location.search);
++const themeParam = params.get("theme");
++if (themeParam === "dark" || themeParam === "light") document.documentElement.dataset.theme = themeParam;
++const marketParam = params.get("market");
++if (marketParam && ["psx", "us"].includes(marketParam)) {
++  state.market = marketParam;
++  document.querySelectorAll(".tab").forEach((b) => {
++    const on = b.dataset.market === marketParam;
++    b.classList.toggle("active", on);
++    b.setAttribute("aria-selected", String(on));
++  });
++}
++
++loadMarket(state.market);
+diff --git a/stock-monitor/public/index.html b/stock-monitor/public/index.html
+new file mode 100644
+index 0000000..2434636
+--- /dev/null
++++ b/stock-monitor/public/index.html
+@@ -0,0 +1,84 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++  <meta charset="UTF-8" />
++  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++  <title>Stock Monitor — PSX &amp; US Markets</title>
++  <link rel="stylesheet" href="/styles.css" />
++  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>📈</text></svg>" />
++</head>
++<body>
++  <header class="topbar">
++    <div class="brand">
++      <span class="brand-mark" aria-hidden="true">📈</span>
++      <h1>Stock Monitor</h1>
++    </div>
++    <nav class="tabs" role="tablist" aria-label="Market">
++      <button class="tab active" role="tab" aria-selected="true" data-market="psx">Pakistan · PSX</button>
++      <button class="tab" role="tab" aria-selected="false" data-market="us">United States</button>
++    </nav>
++    <div class="topbar-right">
++      <span id="source-badge" class="source-badge" hidden></span>
++      <button id="refresh-btn" class="icon-btn" title="Refresh data">⟳ Refresh</button>
++      <button id="theme-btn" class="icon-btn" title="Toggle light/dark theme">◐ Theme</button>
++    </div>
++  </header>
++
++  <main id="app" class="viz-root">
++    <section id="kpi-row" class="kpi-row" aria-label="Market summary"></section>
++
++    <section class="main-grid">
++      <div class="left-col">
++        <div class="panel" id="detail-panel">
++          <div class="panel-head">
++            <h2 id="detail-title">—</h2>
++            <span id="detail-sub" class="panel-sub"></span>
++          </div>
++          <div id="detail-chart" class="detail-chart"></div>
++        </div>
++
++        <div class="panel">
++          <div class="panel-head">
++            <h2>Watchlist</h2>
++            <span class="panel-sub">Click a column to sort · click a row to chart it</span>
++          </div>
++          <div class="table-wrap">
++            <table id="stock-table">
++              <thead></thead>
++              <tbody></tbody>
++            </table>
++          </div>
++        </div>
++      </div>
++
++      <aside class="right-col">
++        <div class="panel">
++          <div class="panel-head">
++            <h2>Where the signals point</h2>
++            <span class="panel-sub">Ranked by composite technical score</span>
++          </div>
++          <div id="suggestions"></div>
++        </div>
++        <div class="panel caution-panel">
++          <div class="panel-head"><h2>Treat with caution</h2></div>
++          <div id="cautions"></div>
++        </div>
++        <p class="disclaimer">
++          <strong>Not financial advice.</strong> These signals are computed from
++          price history alone (trend, momentum, RSI, volatility). They know nothing
++          about earnings, news, or your situation. Do your own research before
++          investing, especially in emerging markets.
++        </p>
++      </aside>
++    </section>
++  </main>
++
++  <footer class="footer">
++    <span id="as-of"></span>
++    <span>Data: PSX data portal · Yahoo Finance · falls back to sample data offline</span>
++  </footer>
++
++  <div id="tooltip" class="tooltip" hidden></div>
++  <script src="/app.js"></script>
++</body>
++</html>
+diff --git a/stock-monitor/public/styles.css b/stock-monitor/public/styles.css
+new file mode 100644
+index 0000000..c74bb3c
+--- /dev/null
++++ b/stock-monitor/public/styles.css
+@@ -0,0 +1,317 @@
++/* Stock Monitor — palette per the validated dataviz reference instance.
++   Roles are defined once here; the chart JS reads them via CSS custom props. */
++
++* { margin: 0; padding: 0; box-sizing: border-box; }
++
++:root {
++  color-scheme: light;
++  --page: #f9f9f7;
++  --surface-1: #fcfcfb;
++  --text-primary: #0b0b0b;
++  --text-secondary: #52514e;
++  --text-muted: #898781;
++  --grid: #e1e0d9;
++  --baseline: #c3c2b7;
++  --border: rgba(11, 11, 11, 0.10);
++  --series-1: #2a78d6;
++  --up: #006300;
++  --down: #d03b3b;
++  --status-good: #0ca30c;
++  --status-warning: #fab219;
++  --status-serious: #ec835a;
++  --status-critical: #d03b3b;
++  --chip-good-bg: rgba(12, 163, 12, 0.12);
++  --chip-warn-bg: rgba(250, 178, 25, 0.16);
++  --chip-serious-bg: rgba(236, 131, 90, 0.16);
++  --chip-neutral-bg: rgba(11, 11, 11, 0.06);
++  --hover-wash: rgba(11, 11, 11, 0.04);
++}
++
++@media (prefers-color-scheme: dark) {
++  :root:where(:not([data-theme="light"])) {
++    color-scheme: dark;
++    --page: #0d0d0d;
++    --surface-1: #1a1a19;
++    --text-primary: #ffffff;
++    --text-secondary: #c3c2b7;
++    --text-muted: #898781;
++    --grid: #2c2c2a;
++    --baseline: #383835;
++    --border: rgba(255, 255, 255, 0.10);
++    --series-1: #3987e5;
++    --up: #0ca30c;
++    --down: #e66767;
++    --chip-neutral-bg: rgba(255, 255, 255, 0.08);
++    --hover-wash: rgba(255, 255, 255, 0.05);
++  }
++}
++:root[data-theme="dark"] {
++  color-scheme: dark;
++  --page: #0d0d0d;
++  --surface-1: #1a1a19;
++  --text-primary: #ffffff;
++  --text-secondary: #c3c2b7;
++  --text-muted: #898781;
++  --grid: #2c2c2a;
++  --baseline: #383835;
++  --border: rgba(255, 255, 255, 0.10);
++  --series-1: #3987e5;
++  --up: #0ca30c;
++  --down: #e66767;
++  --chip-neutral-bg: rgba(255, 255, 255, 0.08);
++  --hover-wash: rgba(255, 255, 255, 0.05);
++}
++
++body {
++  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
++  background: var(--page);
++  color: var(--text-primary);
++  min-height: 100vh;
++  display: flex;
++  flex-direction: column;
++}
++
++/* ── Top bar ─────────────────────────────────────────── */
++.topbar {
++  display: flex;
++  align-items: center;
++  gap: 20px;
++  padding: 12px 24px;
++  border-bottom: 1px solid var(--border);
++  background: var(--surface-1);
++  flex-wrap: wrap;
++}
++.brand { display: flex; align-items: center; gap: 8px; }
++.brand h1 { font-size: 17px; font-weight: 650; }
++.brand-mark { font-size: 18px; }
++
++.tabs { display: flex; gap: 4px; background: var(--hover-wash); border-radius: 10px; padding: 3px; }
++.tab {
++  border: none;
++  background: transparent;
++  color: var(--text-secondary);
++  font: inherit;
++  font-size: 13.5px;
++  font-weight: 550;
++  padding: 7px 16px;
++  border-radius: 8px;
++  cursor: pointer;
++}
++.tab:hover { color: var(--text-primary); }
++.tab.active {
++  background: var(--surface-1);
++  color: var(--text-primary);
++  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
++}
++
++.topbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
++.icon-btn {
++  border: 1px solid var(--border);
++  background: var(--surface-1);
++  color: var(--text-secondary);
++  font: inherit;
++  font-size: 12.5px;
++  padding: 6px 12px;
++  border-radius: 8px;
++  cursor: pointer;
++}
++.icon-btn:hover { color: var(--text-primary); background: var(--hover-wash); }
++
++.source-badge {
++  display: inline-flex;
++  align-items: center;
++  gap: 6px;
++  font-size: 12px;
++  color: var(--text-secondary);
++  border: 1px solid var(--border);
++  padding: 5px 10px;
++  border-radius: 999px;
++}
++.source-badge .dot { width: 8px; height: 8px; border-radius: 50%; }
++
++/* ── Layout ──────────────────────────────────────────── */
++main { flex: 1; padding: 20px 24px; max-width: 1440px; width: 100%; margin: 0 auto; }
++
++.kpi-row {
++  display: grid;
++  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
++  gap: 14px;
++  margin-bottom: 16px;
++}
++
++.main-grid {
++  display: grid;
++  grid-template-columns: minmax(0, 2.2fr) minmax(280px, 1fr);
++  gap: 16px;
++  align-items: start;
++}
++@media (max-width: 980px) {
++  .main-grid { grid-template-columns: 1fr; }
++}
++
++.left-col, .right-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
++
++.panel {
++  background: var(--surface-1);
++  border: 1px solid var(--border);
++  border-radius: 12px;
++  padding: 16px 18px;
++}
++.panel-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
++.panel-head h2 { font-size: 14.5px; font-weight: 650; }
++.panel-sub { font-size: 12px; color: var(--text-muted); }
++
++/* ── Stat tiles ──────────────────────────────────────── */
++.stat-tile {
++  background: var(--surface-1);
++  border: 1px solid var(--border);
++  border-radius: 12px;
++  padding: 14px 16px;
++  display: flex;
++  flex-direction: column;
++  gap: 4px;
++}
++.stat-label { font-size: 12.5px; color: var(--text-secondary); }
++.stat-value { font-size: 26px; font-weight: 600; line-height: 1.15; }
++.stat-value .unit { font-size: 15px; font-weight: 500; color: var(--text-secondary); }
++.stat-delta { font-size: 12.5px; font-weight: 550; }
++.stat-delta.up { color: var(--up); }
++.stat-delta.down { color: var(--down); }
++.stat-delta .vs { color: var(--text-muted); font-weight: 400; }
++.stat-spark { margin-top: 6px; }
++
++/* ── Table ───────────────────────────────────────────── */
++.table-wrap { overflow-x: auto; }
++#stock-table { width: 100%; border-collapse: collapse; font-size: 13px; }
++#stock-table th {
++  text-align: right;
++  font-size: 11.5px;
++  font-weight: 550;
++  color: var(--text-muted);
++  padding: 6px 10px;
++  border-bottom: 1px solid var(--grid);
++  cursor: pointer;
++  user-select: none;
++  white-space: nowrap;
++}
++#stock-table th:first-child { text-align: left; }
++#stock-table th:hover { color: var(--text-primary); }
++#stock-table th .arrow { font-size: 9px; }
++#stock-table td {
++  padding: 8px 10px;
++  border-bottom: 1px solid var(--grid);
++  text-align: right;
++  font-variant-numeric: tabular-nums;
++  white-space: nowrap;
++}
++#stock-table td:first-child { text-align: left; }
++#stock-table tbody tr { cursor: pointer; }
++#stock-table tbody tr:hover { background: var(--hover-wash); }
++#stock-table tbody tr.selected { background: color-mix(in srgb, var(--series-1) 8%, transparent); }
++#stock-table tbody tr:last-child td { border-bottom: none; }
++
++.sym { font-weight: 650; }
++.sym-name { display: block; font-size: 11px; font-weight: 400; color: var(--text-muted); }
++td.up { color: var(--up); }
++td.down { color: var(--down); }
++
++.chip {
++  display: inline-flex;
++  align-items: center;
++  gap: 5px;
++  font-size: 11.5px;
++  font-weight: 550;
++  color: var(--text-primary);
++  padding: 3px 9px;
++  border-radius: 999px;
++  white-space: nowrap;
++}
++.chip .chip-ico { font-size: 10px; }
++.chip-buy { background: var(--chip-good-bg); }
++.chip-buy .chip-ico { color: var(--status-good); }
++.chip-acc { background: var(--chip-warn-bg); }
++.chip-acc .chip-ico { color: var(--status-warning); }
++.chip-hold { background: var(--chip-neutral-bg); }
++.chip-hold .chip-ico { color: var(--text-muted); }
++.chip-weak { background: var(--chip-serious-bg); }
++.chip-weak .chip-ico { color: var(--status-serious); }
++
++.score-cell { display: inline-flex; align-items: center; gap: 8px; justify-content: flex-end; }
++.score-meter {
++  width: 52px;
++  height: 6px;
++  border-radius: 3px;
++  background: color-mix(in srgb, var(--series-1) 18%, transparent);
++  overflow: hidden;
++}
++.score-meter > i { display: block; height: 100%; background: var(--series-1); border-radius: 3px; }
++
++/* ── Suggestions ─────────────────────────────────────── */
++.sugg {
++  padding: 12px 0;
++  border-bottom: 1px solid var(--grid);
++}
++.sugg:first-child { padding-top: 2px; }
++.sugg:last-child { border-bottom: none; padding-bottom: 2px; }
++.sugg-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
++.sugg-rank {
++  font-size: 11px;
++  font-weight: 650;
++  color: var(--text-muted);
++  border: 1px solid var(--border);
++  border-radius: 6px;
++  width: 20px; height: 20px;
++  display: inline-flex; align-items: center; justify-content: center;
++}
++.sugg-sym { font-weight: 650; font-size: 13.5px; }
++.sugg-name { font-size: 12px; color: var(--text-muted); }
++.sugg-score { margin-left: auto; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
++.sugg ul { margin: 4px 0 0 0; padding-left: 18px; }
++.sugg li { font-size: 12.3px; color: var(--text-secondary); line-height: 1.45; margin-bottom: 2px; }
++.caution-panel .sugg-head { margin-bottom: 2px; }
++.empty-note { font-size: 12.5px; color: var(--text-muted); padding: 6px 0; }
++
++.disclaimer {
++  font-size: 11.8px;
++  line-height: 1.5;
++  color: var(--text-muted);
++  padding: 2px 4px;
++}
++.disclaimer strong { color: var(--text-secondary); }
++
++/* ── Detail chart ────────────────────────────────────── */
++.detail-chart { position: relative; }
++.detail-chart svg { display: block; width: 100%; height: auto; }
++
++.tooltip {
++  position: fixed;
++  z-index: 10;
++  pointer-events: none;
++  background: var(--surface-1);
++  border: 1px solid var(--border);
++  border-radius: 8px;
++  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
++  padding: 8px 10px;
++  font-size: 12px;
++  color: var(--text-secondary);
++  min-width: 130px;
++}
++.tooltip .tt-date { color: var(--text-muted); font-size: 11px; margin-bottom: 2px; }
++.tooltip .tt-price { color: var(--text-primary); font-weight: 650; font-size: 14px; font-variant-numeric: tabular-nums; }
++.tooltip .tt-delta { font-variant-numeric: tabular-nums; }
++.tooltip .tt-delta.up { color: var(--up); }
++.tooltip .tt-delta.down { color: var(--down); }
++
++/* ── Footer ──────────────────────────────────────────── */
++.footer {
++  display: flex;
++  justify-content: space-between;
++  gap: 16px;
++  flex-wrap: wrap;
++  padding: 12px 24px;
++  font-size: 11.5px;
++  color: var(--text-muted);
++  border-top: 1px solid var(--border);
++}
++
++.loading { padding: 40px; text-align: center; color: var(--text-muted); font-size: 13px; }
+diff --git a/stock-monitor/server.ts b/stock-monitor/server.ts
+new file mode 100644
+index 0000000..91bed78
+--- /dev/null
++++ b/stock-monitor/server.ts
+@@ -0,0 +1,135 @@
++// Stock Monitor server — serves the dashboard and a per-market quotes API.
++//
++//   bun stock-monitor/server.ts          # http://localhost:4780
++//   PORT=5000 bun stock-monitor/server.ts
++//
++// Live data comes from the PSX data portal (Pakistan) and Yahoo Finance (US),
++// fetched server-side to avoid browser CORS. Any symbol that fails falls back
++// to deterministic sample data, and the response says which source it used.
++
++import { join } from "node:path";
++import { MARKETS, type MarketConfig } from "./src/watchlists";
++import { generateSeries, type SeriesPoint } from "./src/sample-data";
++import { fetchPsxSeries, fetchYahooSeries } from "./src/providers";
++import { computeSignals, type Signals } from "./src/signals";
++
++const PORT = Number(process.env.PORT || 4780);
++const PUBLIC_DIR = join(import.meta.dir, "public");
++const CACHE_TTL_MS = 5 * 60 * 1000;
++
++interface StockPayload {
++  symbol: string;
++  name: string;
++  sector: string;
++  price: number;
++  change: number;
++  changePct: number;
++  volume: number;
++  hi: number; // series high (~6 months)
++  lo: number; // series low
++  live: boolean;
++  dates: string[];
++  closes: number[];
++  signals: Signals;
++}
++
++interface MarketPayload {
++  market: string;
++  label: string;
++  currency: string;
++  currencySymbol: string;
++  indexName: string;
++  source: "live" | "sample" | "mixed";
++  asOf: string;
++  stocks: StockPayload[];
++}
++
++const cache = new Map<string, { at: number; payload: MarketPayload }>();
++
++function toStockPayload(cfg: MarketConfig, i: number, series: SeriesPoint[], live: boolean): StockPayload {
++  const entry = cfg.stocks[i];
++  const closes = series.map((p) => p.close);
++  const price = closes[closes.length - 1];
++  const prev = closes.length > 1 ? closes[closes.length - 2] : price;
++  return {
++    symbol: entry.symbol,
++    name: entry.name,
++    sector: entry.sector,
++    price,
++    change: Number((price - prev).toFixed(2)),
++    changePct: prev ? Number((((price - prev) / prev) * 100).toFixed(2)) : 0,
++    volume: series[series.length - 1].volume,
++    hi: Math.max(...closes),
++    lo: Math.min(...closes),
++    live,
++    dates: series.map((p) => p.date),
++    closes,
++    signals: computeSignals(series),
++  };
++}
++
++async function buildMarketPayload(cfg: MarketConfig): Promise<MarketPayload> {
++  const fetcher = cfg.id === "psx" ? fetchPsxSeries : fetchYahooSeries;
++  const results = await Promise.all(
++    cfg.stocks.map(async (entry, i) => {
++      const live = await fetcher(entry.symbol);
++      return toStockPayload(cfg, i, live ?? generateSeries(entry), live !== null);
++    })
++  );
++  const liveCount = results.filter((r) => r.live).length;
++  return {
++    market: cfg.id,
++    label: cfg.label,
++    currency: cfg.currency,
++    currencySymbol: cfg.currencySymbol,
++    indexName: cfg.indexName,
++    source: liveCount === results.length ? "live" : liveCount === 0 ? "sample" : "mixed",
++    asOf: new Date().toISOString(),
++    stocks: results,
++  };
++}
++
++async function getMarket(id: string, force: boolean): Promise<MarketPayload | null> {
++  const cfg = MARKETS[id];
++  if (!cfg) return null;
++  const hit = cache.get(id);
++  if (!force && hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.payload;
++  const payload = await buildMarketPayload(cfg);
++  cache.set(id, { at: Date.now(), payload });
++  return payload;
++}
++
++const STATIC_TYPES: Record<string, string> = {
++  ".html": "text/html; charset=utf-8",
++  ".js": "text/javascript; charset=utf-8",
++  ".css": "text/css; charset=utf-8",
++  ".svg": "image/svg+xml",
++  ".ico": "image/x-icon",
++};
++
++Bun.serve({
++  port: PORT,
++  async fetch(req) {
++    const url = new URL(req.url);
++
++    if (url.pathname.startsWith("/api/market/")) {
++      const id = url.pathname.split("/")[3] ?? "";
++      const force = url.searchParams.get("refresh") === "1";
++      const payload = await getMarket(id, force);
++      if (!payload) return Response.json({ error: `unknown market: ${id}` }, { status: 404 });
++      return Response.json(payload, { headers: { "Cache-Control": "no-store" } });
++    }
++
++    // Static files (no traversal: resolve within PUBLIC_DIR only)
++    const rel = url.pathname === "/" ? "/index.html" : url.pathname;
++    if (rel.includes("..")) return new Response("Bad request", { status: 400 });
++    const file = Bun.file(join(PUBLIC_DIR, rel));
++    if (await file.exists()) {
++      const ext = rel.slice(rel.lastIndexOf("."));
++      return new Response(file, { headers: { "Content-Type": STATIC_TYPES[ext] ?? "application/octet-stream" } });
++    }
++    return new Response("Not found", { status: 404 });
++  },
++});
++
++console.log(`Stock Monitor running at http://localhost:${PORT}`);
+diff --git a/stock-monitor/src/providers.ts b/stock-monitor/src/providers.ts
+new file mode 100644
+index 0000000..ed81e95
+--- /dev/null
++++ b/stock-monitor/src/providers.ts
+@@ -0,0 +1,81 @@
++// Live market-data fetchers.
++// PSX: the exchange's own data portal (dps.psx.com.pk) — free, no key.
++// US:  Yahoo Finance chart API — free, no key.
++// Every fetcher returns null on any failure; the server falls back to
++// deterministic sample data per symbol so the dashboard always renders.
++
++import type { SeriesPoint } from "./sample-data";
++
++const FETCH_TIMEOUT_MS = 8000;
++
++async function fetchJson(url: string): Promise<unknown | null> {
++  const controller = new AbortController();
++  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
++  try {
++    const res = await fetch(url, {
++      signal: controller.signal,
++      headers: {
++        "User-Agent": "Mozilla/5.0 (compatible; stock-monitor/1.0)",
++        Accept: "application/json",
++      },
++    });
++    if (!res.ok) return null;
++    return await res.json();
++  } catch {
++    // Network down, host blocked, timeout — all mean "use sample data".
++    return null;
++  } finally {
++    clearTimeout(timer);
++  }
++}
++
++/**
++ * PSX data portal end-of-day timeseries.
++ * Shape: { status: 1, data: [[unixSeconds, price, volume], ...] }
++ * Row order is not guaranteed; we sort ascending by timestamp.
++ */
++export async function fetchPsxSeries(symbol: string): Promise<SeriesPoint[] | null> {
++  const json = (await fetchJson(`https://dps.psx.com.pk/timeseries/eod/${encodeURIComponent(symbol)}`)) as
++    | { status?: number; data?: [number, number, number][] }
++    | null;
++  if (!json || json.status !== 1 || !Array.isArray(json.data) || json.data.length < 30) return null;
++
++  const rows = [...json.data]
++    .filter((r) => Array.isArray(r) && r.length >= 2 && r[1] > 0)
++    .sort((a, b) => a[0] - b[0])
++    .slice(-130);
++  if (rows.length < 30) return null;
++
++  return rows.map(([ts, price, volume]) => ({
++    date: new Date(ts * 1000).toISOString().slice(0, 10),
++    close: Number(price),
++    volume: Number(volume ?? 0),
++  }));
++}
++
++/**
++ * Yahoo Finance daily chart, ~6 months.
++ * Shape: chart.result[0] = { timestamp: [...], indicators: { quote: [{ close, volume }] } }
++ */
++export async function fetchYahooSeries(symbol: string): Promise<SeriesPoint[] | null> {
++  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=6mo&interval=1d`;
++  const json = (await fetchJson(url)) as {
++    chart?: { result?: Array<{ timestamp?: number[]; indicators?: { quote?: Array<{ close?: (number | null)[]; volume?: (number | null)[] }> } }> };
++  } | null;
++  const result = json?.chart?.result?.[0];
++  const timestamps = result?.timestamp;
++  const quote = result?.indicators?.quote?.[0];
++  if (!timestamps || !quote?.close || timestamps.length < 30) return null;
++
++  const points: SeriesPoint[] = [];
++  for (let i = 0; i < timestamps.length; i++) {
++    const close = quote.close[i];
++    if (close === null || close === undefined) continue; // holiday / partial rows
++    points.push({
++      date: new Date(timestamps[i] * 1000).toISOString().slice(0, 10),
++      close: Number(close.toFixed(2)),
++      volume: Number(quote.volume?.[i] ?? 0),
++    });
++  }
++  return points.length >= 30 ? points : null;
++}
+diff --git a/stock-monitor/src/sample-data.ts b/stock-monitor/src/sample-data.ts
+new file mode 100644
+index 0000000..3e1e369
+--- /dev/null
++++ b/stock-monitor/src/sample-data.ts
+@@ -0,0 +1,86 @@
++// Deterministic sample time-series generator.
++// Used when live market feeds are unreachable (offline dev, blocked network).
++// Seeded per symbol + calendar date, so a given day always renders the same
++// data — refreshing the page doesn't reshuffle the market.
++
++import type { WatchlistEntry } from "./watchlists";
++
++export interface SeriesPoint {
++  date: string; // YYYY-MM-DD
++  close: number;
++  volume: number;
++}
++
++function hashString(s: string): number {
++  let h = 2166136261;
++  for (let i = 0; i < s.length; i++) {
++    h ^= s.charCodeAt(i);
++    h = Math.imul(h, 16777619);
++  }
++  return h >>> 0;
++}
++
++function mulberry32(seed: number) {
++  let a = seed >>> 0;
++  return () => {
++    a |= 0;
++    a = (a + 0x6d2b79f5) | 0;
++    let t = Math.imul(a ^ (a >>> 15), 1 | a);
++    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
++    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
++  };
++}
++
++// Box-Muller: two uniforms -> one standard normal
++function gaussian(rand: () => number): number {
++  const u = Math.max(rand(), 1e-12);
++  const v = rand();
++  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
++}
++
++function isWeekend(d: Date): boolean {
++  const day = d.getUTCDay();
++  return day === 0 || day === 6;
++}
++
++/**
++ * Generate ~`tradingDays` of daily closes ending at the most recent weekday.
++ * Geometric random walk with the entry's drift/vol, seeded deterministically.
++ */
++export function generateSeries(entry: WatchlistEntry, tradingDays = 126): SeriesPoint[] {
++  const today = new Date();
++  const dayKey = today.toISOString().slice(0, 10);
++  const rand = mulberry32(hashString(`${entry.symbol}:${dayKey}`));
++
++  // Collect trading dates going backwards, then walk forwards.
++  const dates: string[] = [];
++  const cursor = new Date(today);
++  while (dates.length < tradingDays) {
++    if (!isWeekend(cursor)) dates.push(cursor.toISOString().slice(0, 10));
++    cursor.setUTCDate(cursor.getUTCDate() - 1);
++  }
++  dates.reverse();
++
++  const dt = 1 / 252; // one trading day in years
++  const sigma = entry.vol * Math.sqrt(dt);
++  const mu = (entry.drift - 0.5 * entry.vol * entry.vol) * dt;
++
++  // Walk backwards from basePrice so the series ENDS near the realistic level.
++  const returns: number[] = [];
++  for (let i = 0; i < tradingDays - 1; i++) returns.push(mu + sigma * gaussian(rand));
++  const totalLog = returns.reduce((a, b) => a + b, 0);
++  let price = entry.basePrice / Math.exp(totalLog);
++
++  const baseVolume = Math.round(80_000_000 / Math.sqrt(entry.basePrice));
++  const points: SeriesPoint[] = [];
++  for (let i = 0; i < tradingDays; i++) {
++    if (i > 0) price *= Math.exp(returns[i - 1]);
++    const volNoise = 0.5 + rand() * 1.2 + Math.abs(i > 0 ? returns[i - 1] : 0) * 25;
++    points.push({
++      date: dates[i],
++      close: Number(price.toFixed(2)),
++      volume: Math.round(baseVolume * volNoise),
++    });
++  }
++  return points;
++}
+diff --git a/stock-monitor/src/signals.ts b/stock-monitor/src/signals.ts
+new file mode 100644
+index 0000000..5decc93
+--- /dev/null
++++ b/stock-monitor/src/signals.ts
+@@ -0,0 +1,165 @@
++// Technical signal engine.
++// Computes indicators from a daily close series and folds them into a 0-100
++// score with a plain-English rationale. This is an educational screen, not
++// financial advice — the UI carries that disclaimer prominently.
++
++import type { SeriesPoint } from "./sample-data";
++
++export type SignalLabel = "Buy candidate" | "Accumulate" | "Hold" | "Weak";
++
++export interface Signals {
++  rsi14: number | null;
++  sma20: number | null;
++  sma50: number | null;
++  mom21: number | null;  // 1-month return, fraction
++  mom63: number | null;  // 3-month return, fraction
++  volAnn: number | null; // annualized volatility, fraction
++  posRange: number;      // position in the series' high/low range, 0..1
++  score: number;         // 0..100
++  label: SignalLabel;
++  rationale: string[];
++}
++
++function sma(closes: number[], period: number): number | null {
++  if (closes.length < period) return null;
++  const slice = closes.slice(-period);
++  return slice.reduce((a, b) => a + b, 0) / period;
++}
++
++function rsi(closes: number[], period = 14): number | null {
++  if (closes.length < period + 1) return null;
++  let gains = 0;
++  let losses = 0;
++  // Wilder's smoothing over the full series for stability
++  let avgGain: number | null = null;
++  let avgLoss: number | null = null;
++  for (let i = 1; i < closes.length; i++) {
++    const delta = closes[i] - closes[i - 1];
++    const gain = Math.max(delta, 0);
++    const loss = Math.max(-delta, 0);
++    if (i <= period) {
++      gains += gain;
++      losses += loss;
++      if (i === period) {
++        avgGain = gains / period;
++        avgLoss = losses / period;
++      }
++    } else {
++      avgGain = (avgGain! * (period - 1) + gain) / period;
++      avgLoss = (avgLoss! * (period - 1) + loss) / period;
++    }
++  }
++  if (avgGain === null || avgLoss === null) return null;
++  if (avgLoss === 0) return 100;
++  const rs = avgGain / avgLoss;
++  return 100 - 100 / (1 + rs);
++}
++
++function momentum(closes: number[], lookback: number): number | null {
++  if (closes.length < lookback + 1) return null;
++  const past = closes[closes.length - 1 - lookback];
++  if (past === 0) return null;
++  return closes[closes.length - 1] / past - 1;
++}
++
++function annualizedVol(closes: number[]): number | null {
++  if (closes.length < 21) return null;
++  const rets: number[] = [];
++  for (let i = 1; i < closes.length; i++) rets.push(Math.log(closes[i] / closes[i - 1]));
++  const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
++  const variance = rets.reduce((a, r) => a + (r - mean) ** 2, 0) / (rets.length - 1);
++  return Math.sqrt(variance) * Math.sqrt(252);
++}
++
++const pct = (x: number) => `${x >= 0 ? "+" : ""}${(x * 100).toFixed(1)}%`;
++
++export function computeSignals(series: SeriesPoint[]): Signals {
++  const closes = series.map((p) => p.close);
++  const price = closes[closes.length - 1];
++  const hi = Math.max(...closes);
++  const lo = Math.min(...closes);
++
++  const s: Signals = {
++    rsi14: rsi(closes),
++    sma20: sma(closes, 20),
++    sma50: sma(closes, 50),
++    mom21: momentum(closes, 21),
++    mom63: momentum(closes, 63),
++    volAnn: annualizedVol(closes),
++    posRange: hi === lo ? 0.5 : (price - lo) / (hi - lo),
++    score: 0,
++    label: "Hold",
++    rationale: [],
++  };
++
++  let score = 50;
++  const why: string[] = [];
++
++  // Trend: price vs 50-day average (±15)
++  if (s.sma50 !== null) {
++    const gap = price / s.sma50 - 1;
++    if (gap > 0.02) {
++      score += Math.min(15, gap * 150);
++      why.push(`Trading ${pct(gap)} above its 50-day average — uptrend intact`);
++    } else if (gap < -0.02) {
++      score += Math.max(-15, gap * 150);
++      why.push(`Trading ${pct(gap)} below its 50-day average — trend is against it`);
++    } else {
++      why.push("Sitting on its 50-day average — no clear trend");
++    }
++  }
++
++  // Momentum: 3-month return (±20)
++  if (s.mom63 !== null) {
++    score += Math.max(-20, Math.min(20, s.mom63 * 80));
++    if (s.mom63 > 0.05) why.push(`Up ${pct(s.mom63)} over the last 3 months`);
++    else if (s.mom63 < -0.05) why.push(`Down ${pct(s.mom63)} over the last 3 months`);
++  }
++
++  // Short-term momentum confirmation (±5)
++  if (s.mom21 !== null && s.mom63 !== null) {
++    if (s.mom21 > 0 && s.mom63 > 0) score += 5;
++    else if (s.mom21 < 0 && s.mom63 > 0.05) {
++      score -= 3;
++      why.push(`Pulling back this month (${pct(s.mom21)}) within a longer uptrend`);
++    }
++  }
++
++  // RSI: reward the healthy band, flag the extremes (±10)
++  if (s.rsi14 !== null) {
++    if (s.rsi14 >= 45 && s.rsi14 <= 65) {
++      score += 8;
++      why.push(`RSI ${s.rsi14.toFixed(0)} — steady demand, not overheated`);
++    } else if (s.rsi14 > 75) {
++      score -= 10;
++      why.push(`RSI ${s.rsi14.toFixed(0)} — overbought, a pullback is likelier here`);
++    } else if (s.rsi14 < 30) {
++      score -= 2;
++      why.push(`RSI ${s.rsi14.toFixed(0)} — oversold; watch for a base before buying`);
++    }
++  }
++
++  // Range position: mid-to-upper is constructive, the very top is chase-y (±7)
++  if (s.posRange >= 0.45 && s.posRange <= 0.9) score += 7;
++  else if (s.posRange > 0.97) {
++    score -= 2;
++    why.push("At the very top of its 6-month range — wait for a dip if entering");
++  } else if (s.posRange < 0.15) {
++    score -= 5;
++    why.push("Near the bottom of its 6-month range");
++  }
++
++  // Volatility: calmer names score a small bonus (±5)
++  if (s.volAnn !== null) {
++    if (s.volAnn < 0.25) score += 5;
++    else if (s.volAnn > 0.45) {
++      score -= 5;
++      why.push(`High volatility (${(s.volAnn * 100).toFixed(0)}% annualized) — size positions accordingly`);
++    }
++  }
++
++  s.score = Math.round(Math.max(0, Math.min(100, score)));
++  s.label = s.score >= 70 ? "Buy candidate" : s.score >= 58 ? "Accumulate" : s.score >= 42 ? "Hold" : "Weak";
++  s.rationale = why;
++  return s;
++}
+diff --git a/stock-monitor/src/watchlists.ts b/stock-monitor/src/watchlists.ts
+new file mode 100644
+index 0000000..eba4ff1
+--- /dev/null
++++ b/stock-monitor/src/watchlists.ts
+@@ -0,0 +1,75 @@
++// Watchlist definitions for both markets.
++// basePrice is only used to seed realistic sample data when live feeds are
++// unreachable — it is never shown as a live price.
++
++export interface WatchlistEntry {
++  symbol: string;
++  name: string;
++  sector: string;
++  basePrice: number; // sample-data seed, approximate recent level
++  drift: number;     // sample-data annual drift (e.g. 0.15 = +15%/yr trend)
++  vol: number;       // sample-data annualized volatility (e.g. 0.30)
++}
++
++export interface MarketConfig {
++  id: "psx" | "us";
++  label: string;
++  currency: string;
++  currencySymbol: string;
++  indexName: string;
++  stocks: WatchlistEntry[];
++}
++
++export const PSX: MarketConfig = {
++  id: "psx",
++  label: "Pakistan (PSX)",
++  currency: "PKR",
++  currencySymbol: "Rs ",
++  indexName: "PSX watchlist index",
++  stocks: [
++    { symbol: "OGDC", name: "Oil & Gas Development Co", sector: "Energy", basePrice: 225, drift: 0.30, vol: 0.32 },
++    { symbol: "PPL", name: "Pakistan Petroleum", sector: "Energy", basePrice: 190, drift: 0.25, vol: 0.34 },
++    { symbol: "MARI", name: "Mari Energies", sector: "Energy", basePrice: 640, drift: 0.28, vol: 0.36 },
++    { symbol: "PSO", name: "Pakistan State Oil", sector: "Energy", basePrice: 385, drift: 0.20, vol: 0.38 },
++    { symbol: "LUCK", name: "Lucky Cement", sector: "Cement", basePrice: 1060, drift: 0.35, vol: 0.30 },
++    { symbol: "ENGRO", name: "Engro Holdings", sector: "Conglomerate", basePrice: 320, drift: 0.15, vol: 0.28 },
++    { symbol: "FFC", name: "Fauji Fertilizer", sector: "Fertilizer", basePrice: 455, drift: 0.32, vol: 0.26 },
++    { symbol: "EFERT", name: "Engro Fertilizers", sector: "Fertilizer", basePrice: 212, drift: 0.18, vol: 0.24 },
++    { symbol: "HBL", name: "Habib Bank", sector: "Banking", basePrice: 285, drift: 0.28, vol: 0.30 },
++    { symbol: "UBL", name: "United Bank", sector: "Banking", basePrice: 375, drift: 0.34, vol: 0.32 },
++    { symbol: "MCB", name: "MCB Bank", sector: "Banking", basePrice: 265, drift: 0.22, vol: 0.26 },
++    { symbol: "MEBL", name: "Meezan Bank", sector: "Banking", basePrice: 350, drift: 0.30, vol: 0.28 },
++    { symbol: "HUBC", name: "Hub Power", sector: "Power", basePrice: 152, drift: 0.12, vol: 0.34 },
++    { symbol: "SYS", name: "Systems Limited", sector: "Technology", basePrice: 455, drift: 0.10, vol: 0.40 },
++    { symbol: "TRG", name: "TRG Pakistan", sector: "Technology", basePrice: 66, drift: 0.05, vol: 0.48 },
++    { symbol: "AIRLINK", name: "Air Link Communication", sector: "Technology", basePrice: 178, drift: 0.20, vol: 0.44 },
++  ],
++};
++
++export const US: MarketConfig = {
++  id: "us",
++  label: "United States",
++  currency: "USD",
++  currencySymbol: "$",
++  indexName: "US watchlist index",
++  stocks: [
++    { symbol: "AAPL", name: "Apple", sector: "Technology", basePrice: 232, drift: 0.10, vol: 0.24 },
++    { symbol: "MSFT", name: "Microsoft", sector: "Technology", basePrice: 505, drift: 0.16, vol: 0.22 },
++    { symbol: "GOOGL", name: "Alphabet", sector: "Technology", basePrice: 198, drift: 0.14, vol: 0.26 },
++    { symbol: "AMZN", name: "Amazon", sector: "Consumer", basePrice: 228, drift: 0.15, vol: 0.28 },
++    { symbol: "NVDA", name: "NVIDIA", sector: "Semiconductors", basePrice: 172, drift: 0.30, vol: 0.42 },
++    { symbol: "META", name: "Meta Platforms", sector: "Technology", basePrice: 715, drift: 0.18, vol: 0.30 },
++    { symbol: "TSLA", name: "Tesla", sector: "Automotive", basePrice: 318, drift: 0.02, vol: 0.52 },
++    { symbol: "AVGO", name: "Broadcom", sector: "Semiconductors", basePrice: 272, drift: 0.24, vol: 0.34 },
++    { symbol: "JPM", name: "JPMorgan Chase", sector: "Banking", basePrice: 292, drift: 0.12, vol: 0.20 },
++    { symbol: "V", name: "Visa", sector: "Payments", basePrice: 358, drift: 0.10, vol: 0.18 },
++    { symbol: "LLY", name: "Eli Lilly", sector: "Healthcare", basePrice: 785, drift: 0.12, vol: 0.32 },
++    { symbol: "UNH", name: "UnitedHealth", sector: "Healthcare", basePrice: 305, drift: -0.05, vol: 0.36 },
++    { symbol: "XOM", name: "Exxon Mobil", sector: "Energy", basePrice: 114, drift: 0.04, vol: 0.24 },
++    { symbol: "JNJ", name: "Johnson & Johnson", sector: "Healthcare", basePrice: 156, drift: 0.05, vol: 0.16 },
++    { symbol: "COST", name: "Costco", sector: "Consumer", basePrice: 985, drift: 0.11, vol: 0.20 },
++    { symbol: "BRK-B", name: "Berkshire Hathaway", sector: "Diversified", basePrice: 488, drift: 0.08, vol: 0.16 },
++  ],
++};
++
++export const MARKETS: Record<string, MarketConfig> = { psx: PSX, us: US };
+-- 
+2.43.0
+

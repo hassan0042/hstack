@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stock Monitor — PSX &amp; US Markets</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>📈</text></svg>" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">📈</span>
+      <h1>Stock Monitor</h1>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Market">
+      <button class="tab active" role="tab" aria-selected="true" data-market="psx">Pakistan · PSX</button>
+      <button class="tab" role="tab" aria-selected="false" data-market="us">United States</button>
+    </nav>
+    <div class="topbar-right">
+      <span id="source-badge" class="source-badge" hidden></span>
+      <button id="refresh-btn" class="icon-btn" title="Refresh data">⟳ Refresh</button>
+      <button id="theme-btn" class="icon-btn" title="Toggle light/dark theme">◐ Theme</button>
+    </div>
+  </header>
+
+  <main id="app" class="viz-root">
+    <section id="kpi-row" class="kpi-row" aria-label="Market summary"></section>
+
+    <section class="main-grid">
+      <div class="left-col">
+        <div class="panel" id="detail-panel">
+          <div class="panel-head">
+            <h2 id="detail-title">—</h2>
+            <span id="detail-sub" class="panel-sub"></span>
+          </div>
+          <div id="detail-chart" class="detail-chart"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Watchlist</h2>
+            <span class="panel-sub">Click a column to sort · click a row to chart it</span>
+          </div>
+          <div class="table-wrap">
+            <table id="stock-table">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <aside class="right-col">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Where the signals point</h2>
+            <span class="panel-sub">Ranked by composite technical score</span>
+          </div>
+          <div id="suggestions"></div>
+        </div>
+        <div class="panel caution-panel">
+          <div class="panel-head"><h2>Treat with caution</h2></div>
+          <div id="cautions"></div>
+        </div>
+        <p class="disclaimer">
+          <strong>Not financial advice.</strong> These signals are computed from
+          price history alone (trend, momentum, RSI, volatility). They know nothing
+          about earnings, news, or your situation. Do your own research before
+          investing, especially in emerging markets.
+        </p>
+      </aside>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span id="as-of"></span>
+    <span>Data: PSX data portal · Yahoo Finance · falls back to sample data offline</span>
+  </footer>
+
+  <div id="tooltip" class="tooltip" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>
